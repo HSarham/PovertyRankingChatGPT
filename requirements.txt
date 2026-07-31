@@ -1,0 +1,13 @@
+pandas
+openai
+google-cloud-storage
+google-auth
+scikit-learn
+scipy
+numpy
+matplotlib
+choix
+jupyter
+openpyxl
+python-dotenv
+networkx
