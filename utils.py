@@ -9,10 +9,41 @@ import choix
 from scipy.stats import rankdata, bootstrap
 import networkx as nx
 
-def get_metric_and_confidence_interval(targets,outputs,metric,confidence):
-    result = bootstrap((targets,outputs),metric,random_state=0,confidence_level=confidence,paired=True,
-                       vectorized=False, method="percentile")
-    return metric(targets,outputs), result.confidence_interval, result.standard_error
+def get_metric_and_confidence_interval(targets, outputs, metric, confidence):
+
+    if np.any(outputs == "random"):
+        #targets = targets.repeat(1000)
+        rng = np.random.default_rng(seed=0)
+
+        values = []
+        CIs = np.empty((0,2))
+        SEs = []
+
+        for i in range(1000):
+            if targets.dtype == int:
+                outputs = rng.choice(np.unique(targets), size=len(targets), replace=True)
+            else:
+                outputs = rng.random(size=len(targets))
+
+            result = bootstrap((targets, outputs), metric, random_state=0, confidence_level=confidence, paired=True,
+                               vectorized=False, method="percentile", n_resamples=10)
+
+            values.append(metric(targets,outputs))
+            CIs = np.vstack((CIs,result.confidence_interval))
+            SEs.append(result.standard_error)
+
+        value = np.mean(values)
+        CI = np.mean(CIs,axis=0)
+        SE = np.mean(SEs)
+
+    else:
+        result = bootstrap((targets, outputs), metric, random_state=0, confidence_level=confidence, paired=True,
+                           vectorized=False, method="percentile", n_resamples=10000)
+        value = metric(targets,outputs)
+        CI = result.confidence_interval
+        SE = result.standard_error
+
+    return value, CI, SE
 
 def print_metric_and_confidence_interval(targets,outputs,metric,confidence=0.95):
     if metric is spearmanr:
@@ -21,24 +52,39 @@ def print_metric_and_confidence_interval(targets,outputs,metric,confidence=0.95)
 
     metric_value, interval, standard_error = get_metric_and_confidence_interval(targets, outputs, metric, confidence)
 
-    print(f"\t\t{metric.__name__}: {metric_value:0.2f}\n\t\t\t95% Confidence Interval: [{interval.low:0.2f} {interval.high:0.2f}]"
+    print(f"\t\t{metric.__name__}: {metric_value:0.2f}\n\t\t\t95% Confidence Interval: [{interval[0]:0.2f} {interval[1]:0.2f}]"
           f"\tStandard Error: {standard_error:0.2f}")
 
-def get_quantile_accuracies(targets, outputs, qprobs = (0, 0.2, 0.4, 0.6, 0.8)):
+def get_ranking_and_quantile_metrics(targets, outputs="random", qprobs = (0, 0.2, 0.4, 0.6, 0.8)):
 
-    mask = ~np.isnan(outputs)
-    _, target_qs = get_quantiles_labels(targets[mask],qprobs)
-    _, output_qs = get_quantiles_labels(outputs[mask],qprobs)
+    if np.any(outputs != "random"):
+        mask = ~np.isnan(outputs)
+
+        if np.sum(mask) != len(outputs):
+            targets = targets[mask]
+            outputs = outputs[mask]
+
+    print("\tRank Correlation:")
+    print_metric_and_confidence_interval(targets, outputs, spearmanr)
 
     print("\tQuantile prediction:")
-    print_metric_and_confidence_interval(target_qs,output_qs,spearmanr)
+    print()
+    _, target_qs = get_quantiles_labels(targets,qprobs)
+    if np.any(outputs != "random"):
+        _, output_qs = get_quantiles_labels(outputs,qprobs)
+    else:
+        output_qs = "random"
+
     print_metric_and_confidence_interval(target_qs,output_qs,matthews_corrcoef)
 
     num_classes = len(np.unique(target_qs))
     for threshold in range(1,num_classes):
-        print(f"\tDichotomy {threshold}:")
-        bin_targets = binarize(np.array(target_qs).reshape(-1,1),threshold=threshold).reshape(-1)
-        bin_outputs = binarize(np.array(output_qs).reshape(-1,1),threshold=threshold).reshape(-1)
+        print(f"\t\tDichotomy {threshold}:")
+        bin_targets = binarize(np.array(target_qs).reshape(-1,1),threshold=threshold).reshape(-1).astype(int)
+        if np.any(outputs != "random"):
+            bin_outputs = binarize(np.array(output_qs).reshape(-1,1),threshold=threshold).reshape(-1)
+        else:
+            bin_outputs = outputs
         print_metric_and_confidence_interval(bin_targets,bin_outputs,matthews_corrcoef)
 
 def get_metric_diff_CI(targets,outputs_1,outputs_2,metric,confidence):
@@ -66,14 +112,15 @@ def get_metrics_diff_confidence_intervals(targets, outputs_1, outputs_2,
     _, output_1_qs = get_quantiles_labels(outputs_1[mask],qprobs)
     _, output_2_qs = get_quantiles_labels(outputs_2[mask],qprobs)
 
-    print("\tQuantile prediction:")
+    print("\tSpearman Rank Correlation")
+    print_metric_diff_CI(target_qs, outputs_1[mask], outputs_2[mask], spearmanr)
 
-    print_metric_diff_CI(target_qs, output_1_qs, output_2_qs, spearmanr)
+    print("\tQuantile prediction:")
     print_metric_diff_CI(target_qs, output_1_qs, output_2_qs, matthews_corrcoef)
 
     num_classes = len(np.unique(target_qs))
     for threshold in range(1, num_classes):
-        print(f"\tDichotomy {threshold}:")
+        print(f"\t\tDichotomy {threshold}:")
         bin_targets = binarize(np.array(target_qs).reshape(-1, 1), threshold=threshold).reshape(-1)
         bin_outputs_1 = binarize(np.array(output_1_qs).reshape(-1, 1), threshold=threshold).reshape(-1)
         bin_outputs_2 = binarize(np.array(output_2_qs).reshape(-1, 1), threshold=threshold).reshape(-1)
@@ -92,7 +139,7 @@ def get_quantiles_labels(values,qprobs):
         q_indices.append(indices)
         qs[indices] = i+1
     
-    return q_indices,qs
+    return q_indices,np.array(qs,dtype=int)
 
 def show_scatter_samples(df,wealth_index_column,cnn_reg_column,indices=None,use_ranks=True):
         wealth_indices = df[wealth_index_column]
